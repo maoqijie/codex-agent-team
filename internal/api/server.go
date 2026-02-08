@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -61,6 +63,10 @@ func (s *Server) setupMiddleware() {
 
 // setupRoutes configures all HTTP routes.
 func (s *Server) setupRoutes() {
+	// Directory API
+	s.router.Get("/api/dirs", s.handleListDirs)
+	s.router.Get("/api/dirs/*", s.handleListDirs)
+
 	// Session API
 	s.router.Post("/api/sessions", s.handleCreateSession)
 	s.router.Get("/api/sessions/{id}", s.handleGetSession)
@@ -92,10 +98,72 @@ func (s *Server) setupRoutes() {
 func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
-		"version":    "1.0.0",
-		"name":       "Codex Agent Team",
+		"version":     "1.0.0",
+		"name":        "Codex Agent Team",
 		"defaultRepo": s.defaultRepo,
-		"codexBin":   s.codexBin,
+		"codexBin":     s.codexBin,
+	})
+}
+
+// handleListDirs lists directories at the given path.
+func (s *Server) handleListDirs(w http.ResponseWriter, r *http.Request) {
+	// Get path from URL parameter or query string
+	path := chi.URLParam(r, "*")
+	if path == "" || path == "*" {
+		path = r.URL.Query().Get("path")
+	}
+	if path == "" {
+		path = "."
+	}
+
+	// Convert to absolute path
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		http.Error(w, "Invalid path", http.StatusBadRequest)
+		return
+	}
+
+	// Read directory
+	entries, err := os.ReadDir(absPath)
+	if err != nil {
+		http.Error(w, "Failed to read directory", http.StatusNotFound)
+		return
+	}
+
+	// Filter directories only
+	type dirInfo struct {
+		Name     string `json:"name"`
+		Path     string `json:"path"`
+		IsGit    bool   `json:"isGit"`
+	}
+
+	var dirs []dirInfo
+	for _, entry := range entries {
+		name := entry.Name()
+		// Skip hidden directories (starting with .)
+		if strings.HasPrefix(name, ".") {
+			continue
+		}
+		if entry.IsDir() {
+			fullPath := filepath.Join(absPath, name)
+			// Check if it's a git repository
+			isGit := false
+			if _, err := os.Stat(filepath.Join(fullPath, ".git")); err == nil {
+				isGit = true
+			}
+			dirs = append(dirs, dirInfo{
+				Name:  name,
+				Path:  fullPath,
+				IsGit: isGit,
+			})
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"path":   absPath,
+		"dirs":   dirs,
+		"parent": filepath.Dir(absPath),
 	})
 }
 

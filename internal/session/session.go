@@ -3,6 +3,8 @@ package session
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -28,6 +30,7 @@ type Session struct {
 	mu          sync.RWMutex
 	agentMgr    *agent.Manager
 	worktreeMgr *worktree.Manager
+	store       *Store
 }
 
 // SessionStatus represents the current status of a session.
@@ -49,15 +52,64 @@ type Manager struct {
 	sessions map[string]*Session
 	agentMgr *agent.Manager
 	wtMgr    *worktree.Manager
+	store    *Store
 }
 
 // NewManager creates a new Session Manager.
 func NewManager(codexBin, repoPath string) *Manager {
-	return &Manager{
+	cacheDir, _ := os.UserCacheDir()
+	store, _ := NewStore(filepath.Join(cacheDir, "codex-agent-team", "sessions"))
+	mgr := &Manager{
 		sessions: make(map[string]*Session),
 		agentMgr: agent.NewManager(codexBin),
 		wtMgr:    worktree.NewManager(repoPath),
+		store:    store,
 	}
+	mgr.loadSessions()
+	return mgr
+}
+
+// loadSessions restores sessions from disk.
+func (m *Manager) loadSessions() {
+	if m.store == nil {
+		return
+	}
+	dataList, err := m.store.LoadAll()
+	if err != nil {
+		return
+	}
+	for _, data := range dataList {
+		// Create session from stored data (without executor/orchestrator/merger as they need runtime state)
+		sess := &Session{
+			ID:        data.ID,
+			UserTask:  data.UserTask,
+			RepoPath:  data.RepoPath,
+			Status:    data.Status,
+			DAG:       task.NewDAG(),
+			agentMgr:  m.agentMgr,
+			store:     m.store,
+		CreatedAt: parseTime(data.CreatedAt),
+		}
+		if data.StartedAt != nil {
+			t := parseTime(*data.StartedAt)
+			sess.StartedAt = &t
+		}
+		if data.CompletedAt != nil {
+			t := parseTime(*data.CompletedAt)
+			sess.CompletedAt = &t
+		}
+		// Recreate worktree manager and agents for active sessions
+		sess.worktreeMgr = worktree.NewManager(data.RepoPath)
+		sess.Orchestrator = agent.NewOrchestrator(m.agentMgr)
+		sess.Merger = agent.NewMerger(m.agentMgr, sess.worktreeMgr)
+		m.sessions[data.ID] = sess
+	}
+}
+
+// parseTime parses a time string.
+func parseTime(s string) time.Time {
+	t, _ := time.Parse(timeFormat, s)
+	return t
 }
 
 // Create creates a new session for a user task.
@@ -76,12 +128,16 @@ func (m *Manager) Create(ctx context.Context, userTask string) (*Session, error)
 		CreatedAt: time.Now(),
 		agentMgr:    m.agentMgr,
 		worktreeMgr: m.wtMgr,
+		store:       m.store,
 	}
 
 	sess.Orchestrator = agent.NewOrchestrator(m.agentMgr)
 	sess.Merger = agent.NewMerger(m.agentMgr, m.wtMgr)
 
 	m.sessions[id] = sess
+	if m.store != nil {
+		m.store.Save(sess)
+	}
 	return sess, nil
 }
 
@@ -92,12 +148,14 @@ func (s *Session) Decompose(ctx context.Context) error {
 	now := time.Now()
 	s.StartedAt = &now
 	s.mu.Unlock()
+	s.save()
 
 	decomp, err := s.Orchestrator.Decompose(ctx, s.RepoPath, s.UserTask)
 	if err != nil {
 		s.mu.Lock()
 		s.Status = StatusFailed
 		s.mu.Unlock()
+		s.save()
 		return fmt.Errorf("decompose: %w", err)
 	}
 
@@ -119,6 +177,7 @@ func (s *Session) Decompose(ctx context.Context) error {
 	s.mu.Lock()
 	s.Status = StatusReady
 	s.mu.Unlock()
+	s.save()
 
 	return nil
 }
@@ -128,6 +187,7 @@ func (s *Session) Execute(ctx context.Context) error {
 	s.mu.Lock()
 	s.Status = StatusRunning
 	s.mu.Unlock()
+	s.save()
 
 	s.Executor = task.NewExecutor(s.DAG, s.agentMgr, s.worktreeMgr, 3)
 
@@ -135,12 +195,14 @@ func (s *Session) Execute(ctx context.Context) error {
 		s.mu.Lock()
 		s.Status = StatusFailed
 		s.mu.Unlock()
+		s.save()
 		return err
 	}
 
 	s.mu.Lock()
 	s.Status = StatusMerging
 	s.mu.Unlock()
+	s.save()
 
 	return nil
 }
@@ -166,6 +228,7 @@ func (s *Session) Merge(ctx context.Context) error {
 		s.mu.Lock()
 		s.Status = StatusFailed
 		s.mu.Unlock()
+		s.save()
 		return fmt.Errorf("merge: %w", err)
 	}
 
@@ -173,6 +236,7 @@ func (s *Session) Merge(ctx context.Context) error {
 		s.mu.Lock()
 		s.Status = StatusFailed
 		s.mu.Unlock()
+		s.save()
 		return fmt.Errorf("merge failed for branches: %v", result.FailedBranches)
 	}
 
@@ -181,6 +245,7 @@ func (s *Session) Merge(ctx context.Context) error {
 	now := time.Now()
 	s.CompletedAt = &now
 	s.mu.Unlock()
+	s.save()
 
 	return nil
 }
@@ -213,12 +278,16 @@ func (m *Manager) CreateWithPath(ctx context.Context, userTask, repoPath string)
 		CreatedAt: time.Now(),
 		agentMgr:    m.agentMgr,
 		worktreeMgr: wtMgr,
+		store:       m.store,
 	}
 
 	sess.Orchestrator = agent.NewOrchestrator(m.agentMgr)
 	sess.Merger = agent.NewMerger(m.agentMgr, wtMgr)
 
 	m.sessions[id] = sess
+	if m.store != nil {
+		m.store.Save(sess)
+	}
 	return sess, nil
 }
 
@@ -232,4 +301,11 @@ func (m *Manager) ListAll() []*Session {
 		sessions = append(sessions, s)
 	}
 	return sessions
+}
+
+// save persists the session to disk.
+func (s *Session) save() {
+	if s.store != nil {
+		s.store.Save(s)
+	}
 }
