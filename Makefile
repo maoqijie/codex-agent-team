@@ -10,7 +10,7 @@ build: build-frontend
 
 # 运行服务器
 run: build
-	./codex-agent-team -codex codex2 -repo .
+	./codex-agent-team -codex /home/catstream/.local/bin/codex2 -repo .
 
 # 开发模式
 dev:
