@@ -258,6 +258,18 @@ func (d *DAG) UpdateTaskResult(taskID string, commitSHA string) {
 	}
 }
 
+// GetTasks returns all tasks in the DAG.
+func (d *DAG) GetTasks() []*Task {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	tasks := make([]*Task, 0, len(d.tasks))
+	for _, t := range d.tasks {
+		tasks = append(tasks, t)
+	}
+	return tasks
+}
+
 // GetDependencyBranches 获取任务所有依赖任务的分支名
 func (d *DAG) GetDependencyBranches(taskID string) []string {
 	d.mu.RLock()

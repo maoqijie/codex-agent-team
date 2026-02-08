@@ -218,3 +218,62 @@ func (m *Manager) CommitChanges(ctx context.Context, worktreePath string, messag
 
 	return strings.TrimSpace(string(commitSha)), nil
 }
+
+// GetRepoPath returns the repository root path.
+func (m *Manager) GetRepoPath() string {
+	return m.repoPath
+}
+
+// HasConflicts 检查当前 worktree 是否存在冲突
+func (m *Manager) HasConflicts(ctx context.Context, worktreePath string) (bool, []string, error) {
+	cmd := exec.CommandContext(ctx, "git", "diff", "--name-only", "--diff-filter=U")
+	cmd.Dir = worktreePath
+
+	output, err := cmd.Output()
+	if err != nil {
+		return false, nil, fmt.Errorf("check conflicts: %w", err)
+	}
+
+	conflictedFiles := strings.Fields(strings.TrimSpace(string(output)))
+	hasConflicts := len(conflictedFiles) > 0
+
+	return hasConflicts, conflictedFiles, nil
+}
+
+// OctopusMerge 执行 Octopus merge（一次性合并多个分支）
+func (m *Manager) OctopusMerge(ctx context.Context, repoPath string, branches []string) (string, error) {
+	if len(branches) == 0 {
+		return "", fmt.Errorf("no branches to merge")
+	}
+
+	args := []string{"merge", "--no-ff"}
+	args = append(args, branches...)
+
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = repoPath
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("octopus merge failed: %w: %s", err, string(output))
+	}
+
+	headCmd := exec.CommandContext(ctx, "git", "rev-parse", "HEAD")
+	headCmd.Dir = repoPath
+	commitSha, err := headCmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("rev-parse HEAD after merge: %w", err)
+	}
+
+	return strings.TrimSpace(string(commitSha)), nil
+}
+
+// AbortMerge 中止当前的合并操作
+func (m *Manager) AbortMerge(ctx context.Context, worktreePath string) error {
+	cmd := exec.CommandContext(ctx, "git", "merge", "--abort")
+	cmd.Dir = worktreePath
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("abort merge failed: %w: %s", err, string(output))
+	}
+	return nil
+}

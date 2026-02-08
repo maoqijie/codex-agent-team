@@ -1,5 +1,10 @@
 package agent
 
+import (
+	"fmt"
+	"time"
+)
+
 // Role represents the agent's role in the orchestration system.
 type Role string
 
@@ -34,4 +39,9 @@ type AgentEvent struct {
 	AgentID   string
 	EventType string
 	Data      []byte
+}
+
+// GenerateID generates a unique ID using timestamp.
+func GenerateID() string {
+	return fmt.Sprintf("%d", time.Now().UnixNano())
 }

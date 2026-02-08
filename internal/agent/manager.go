@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 
 	"codex-agent-team/internal/codexrpc"
@@ -19,13 +20,14 @@ type Manager struct {
 
 // Instance represents a running Codex agent instance.
 type Instance struct {
-	Config   AgentConfig
-	Process  *codexrpc.Process
-	Client   *codexrpc.Client
-	ThreadID string
-	mu       sync.Mutex // protects State
-	State    AgentState
-	doneCh   chan error // task completion signal
+	Config     AgentConfig
+	Process    *codexrpc.Process
+	Client     *codexrpc.Client
+	ThreadID   string
+	mu         sync.Mutex // protects State and OutputBuffer
+	State      AgentState
+	doneCh     chan error // task completion signal
+	OutputBuffer strings.Builder // accumulated agent output
 }
 
 // NewManager creates a new Agent Manager.
@@ -216,6 +218,7 @@ func (m *Manager) createNotificationHandler(agentID string) codexrpc.Notificatio
 		case "turn/started":
 			instance.mu.Lock()
 			instance.State = StateRunning
+			instance.OutputBuffer.Reset() // Clear buffer for new turn
 			instance.mu.Unlock()
 		case "turn/completed":
 			// Parse the notification to check if it failed
@@ -239,6 +242,14 @@ func (m *Manager) createNotificationHandler(agentID string) codexrpc.Notificatio
 				} else {
 					instance.mu.Unlock()
 				}
+			}
+		case "item/agentMessage/delta":
+			// Accumulate agent output
+			var delta codexrpc.AgentMessageDelta
+			if err := json.Unmarshal(params, &delta); err == nil {
+				instance.mu.Lock()
+				instance.OutputBuffer.WriteString(delta.Delta)
+				instance.mu.Unlock()
 			}
 		}
 
@@ -267,4 +278,19 @@ func (m *Manager) WaitForCompletion(ctx context.Context, agentID string) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+// GetOutput retrieves the accumulated output from an agent.
+func (m *Manager) GetOutput(agentID string) string {
+	m.mu.RLock()
+	instance, exists := m.agents[agentID]
+	m.mu.RUnlock()
+
+	if !exists {
+		return ""
+	}
+
+	instance.mu.Lock()
+	defer instance.mu.Unlock()
+	return instance.OutputBuffer.String()
 }
