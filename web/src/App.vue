@@ -3,11 +3,11 @@
     <header class="header">
       <h1>Codex Agent Team</h1>
       <nav class="nav">
-        <router-link to="/">Home</router>
+        <router-link to="/">Home</router-link>
       </nav>
     </header>
     <main class="main">
-      <router-view />
+      <router-view></router-view>
     </main>
   </div>
 </template>
