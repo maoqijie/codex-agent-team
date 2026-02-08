@@ -193,3 +193,43 @@ func (m *Manager) Get(id string) (*Session, bool) {
 	sess, ok := m.sessions[id]
 	return sess, ok
 }
+
+// CreateWithPath creates a new session for a user task with a specific repo path.
+func (m *Manager) CreateWithPath(ctx context.Context, userTask, repoPath string) (*Session, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	id := fmt.Sprintf("session-%d", time.Now().UnixNano())
+
+	// Create a new worktree manager for this session's repo
+	wtMgr := worktree.NewManager(repoPath)
+
+	sess := &Session{
+		ID:       id,
+		UserTask: userTask,
+		RepoPath: repoPath,
+		Status:   StatusCreated,
+		DAG:      task.NewDAG(),
+		CreatedAt: time.Now(),
+		agentMgr:    m.agentMgr,
+		worktreeMgr: wtMgr,
+	}
+
+	sess.Orchestrator = agent.NewOrchestrator(m.agentMgr)
+	sess.Merger = agent.NewMerger(m.agentMgr, wtMgr)
+
+	m.sessions[id] = sess
+	return sess, nil
+}
+
+// ListAll returns all sessions.
+func (m *Manager) ListAll() []*Session {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	sessions := make([]*Session, 0, len(m.sessions))
+	for _, s := range m.sessions {
+		sessions = append(sessions, s)
+	}
+	return sessions
+}

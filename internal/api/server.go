@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -20,21 +21,21 @@ type Server struct {
 	router       *chi.Mux
 	sessionMgr   *session.Manager
 	codexBin     string
-	repoPath     string
+	defaultRepo  string
 	hub          *Hub
 	shutdownOnce sync.Once
 	shutdownCh   chan struct{}
 }
 
 // NewServer creates a new API server.
-func NewServer(codexBin, repoPath string) *Server {
+func NewServer(codexBin, defaultRepo string) *Server {
 	s := &Server{
-		router:     chi.NewRouter(),
-		codexBin:   codexBin,
-		repoPath:   repoPath,
-		sessionMgr: session.NewManager(codexBin, repoPath),
-		hub:        NewHub(),
-		shutdownCh: make(chan struct{}),
+		router:      chi.NewRouter(),
+		codexBin:    codexBin,
+		defaultRepo: defaultRepo,
+		sessionMgr:  session.NewManager(codexBin, defaultRepo),
+		hub:         NewHub(),
+		shutdownCh:  make(chan struct{}),
 	}
 
 	s.setupMiddleware()
@@ -67,6 +68,10 @@ func (s *Server) setupRoutes() {
 	s.router.Post("/api/sessions/{id}/execute", s.handleExecute)
 	s.router.Post("/api/sessions/{id}/merge", s.handleMerge)
 	s.router.Get("/api/sessions/{id}/tasks", s.handleGetTasks)
+	s.router.Get("/api/sessions", s.handleListSessions)
+
+	// System info
+	s.router.Get("/api/info", s.handleInfo)
 
 	// WebSocket endpoint
 	s.router.Get("/ws/sessions/{id}", s.handleWebSocket)
@@ -83,18 +88,49 @@ func (s *Server) setupRoutes() {
 	})
 }
 
+// handleInfo returns system information.
+func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"version":    "1.0.0",
+		"name":       "Codex Agent Team",
+		"defaultRepo": s.defaultRepo,
+		"codexBin":   s.codexBin,
+	})
+}
+
+// handleListSessions returns all sessions.
+func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
+	sessions := s.sessionMgr.ListAll()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(sessions)
+}
+
 // handleCreateSession creates a new session.
 func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		UserTask string `json:"userTask"`
+		UserTask  string `json:"userTask"`
+		RepoPath  string `json:"repoPath,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 
+	// Use provided repo path or default
+	repoPath := req.RepoPath
+	if repoPath == "" {
+		repoPath = s.defaultRepo
+	}
+	// Convert to absolute path
+	absPath, err := filepath.Abs(repoPath)
+	if err != nil {
+		http.Error(w, "Invalid repo path", http.StatusBadRequest)
+		return
+	}
+
 	ctx := r.Context()
-	sess, err := s.sessionMgr.Create(ctx, req.UserTask)
+	sess, err := s.sessionMgr.CreateWithPath(ctx, req.UserTask, absPath)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -161,15 +197,17 @@ func (s *Server) handleExecute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx := r.Context()
-	if err := sess.Execute(ctx); err != nil {
-		s.hub.Broadcast(id, Event{
-			Type: "session.error",
-			Data: map[string]string{"error": err.Error()},
-		})
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
+	// Start execution in background
+	go func() {
+		ctx := context.Background()
+		if err := sess.Execute(ctx); err != nil {
+			s.hub.Broadcast(id, Event{
+				Type: "session.error",
+				Data: map[string]string{"error": err.Error()},
+			})
+			return
+		}
+	}()
 
 	s.hub.Broadcast(id, Event{
 		Type: "session.executing",
