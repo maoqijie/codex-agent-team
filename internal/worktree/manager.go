@@ -41,8 +41,9 @@ func (m *Manager) Create(ctx context.Context, branchName string, commitHash stri
 	// worktree 路径
 	worktreePath := m.GetPath(branchName)
 
-	// 构建 git worktree add 命令
-	cmd := exec.CommandContext(ctx, "git", "worktree", "add", worktreePath, commit)
+	// 构建 git worktree add -b <branch> <path> <commit> 命令
+	// 使用 -b 创建命名分支，以便后续任务可以通过分支名 merge
+	cmd := exec.CommandContext(ctx, "git", "worktree", "add", "-b", branchName, worktreePath, commit)
 	cmd.Dir = m.repoPath
 
 	output, err := cmd.CombinedOutput()
@@ -50,10 +51,18 @@ func (m *Manager) Create(ctx context.Context, branchName string, commitHash stri
 		return nil, fmt.Errorf("failed to create worktree: %w: %s", err, string(output))
 	}
 
+	// Resolve actual commit SHA
+	headCmd := exec.CommandContext(ctx, "git", "rev-parse", "HEAD")
+	headCmd.Dir = worktreePath
+	commitSha, err := headCmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("rev-parse HEAD in new worktree: %w", err)
+	}
+
 	return &Worktree{
 		Path:   worktreePath,
 		Branch: branchName,
-		Commit: commit,
+		Commit: strings.TrimSpace(string(commitSha)),
 	}, nil
 }
 
@@ -151,4 +160,61 @@ func parseWorktreeList(output string) ([]Worktree, error) {
 	}
 
 	return worktrees, nil
+}
+
+// Merge 将指定分支合并到当前 worktree
+func (m *Manager) Merge(ctx context.Context, worktreePath string, branchName string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "merge", "--no-ff",
+		"-m", fmt.Sprintf("Merge %s", branchName), branchName)
+	cmd.Dir = worktreePath
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		// 清理冲突状态
+		abortCmd := exec.CommandContext(ctx, "git", "merge", "--abort")
+		abortCmd.Dir = worktreePath
+		_ = abortCmd.Run()
+		return "", fmt.Errorf("failed to merge branch %s: %w: %s", branchName, err, string(output))
+	}
+
+	headCmd := exec.CommandContext(ctx, "git", "rev-parse", "HEAD")
+	headCmd.Dir = worktreePath
+	commitSha, err := headCmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("rev-parse HEAD after merge: %w", err)
+	}
+
+	return strings.TrimSpace(string(commitSha)), nil
+}
+
+// CommitChanges 提交 worktree 中的所有修改
+func (m *Manager) CommitChanges(ctx context.Context, worktreePath string, message string) (string, error) {
+	// git add -A（改用 CombinedOutput 获取详细错误）
+	addCmd := exec.CommandContext(ctx, "git", "add", "-A")
+	addCmd.Dir = worktreePath
+	addOutput, err := addCmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git add failed: %w: %s", err, string(addOutput))
+	}
+
+	// git commit
+	commitCmd := exec.CommandContext(ctx, "git", "commit", "-m", message)
+	commitCmd.Dir = worktreePath
+	output, err := commitCmd.CombinedOutput()
+	if err != nil {
+		if strings.Contains(string(output), "nothing to commit") {
+			return "", nil
+		}
+		return "", fmt.Errorf("git commit failed: %w: %s", err, string(output))
+	}
+
+	// 获取 commit SHA
+	headCmd := exec.CommandContext(ctx, "git", "rev-parse", "HEAD")
+	headCmd.Dir = worktreePath
+	commitSha, err := headCmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("rev-parse HEAD after commit: %w", err)
+	}
+
+	return strings.TrimSpace(string(commitSha)), nil
 }

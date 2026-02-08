@@ -23,7 +23,9 @@ type Instance struct {
 	Process  *codexrpc.Process
 	Client   *codexrpc.Client
 	ThreadID string
+	mu       sync.Mutex // protects State
 	State    AgentState
+	doneCh   chan error // task completion signal
 }
 
 // NewManager creates a new Agent Manager.
@@ -98,6 +100,7 @@ func (m *Manager) SpawnAgent(ctx context.Context, cfg AgentConfig) (*Instance, e
 		Client:   client,
 		ThreadID: threadResp.Thread.ID,
 		State:    StateIdle,
+		doneCh:   make(chan error, 1),
 	}
 
 	m.agents[cfg.ID] = instance
@@ -123,7 +126,9 @@ func (m *Manager) SendTask(ctx context.Context, agentID string, message string) 
 	}
 
 	// Update state to running
+	instance.mu.Lock()
 	instance.State = StateRunning
+	instance.mu.Unlock()
 
 	// Send the task via TurnStart
 	_, err := instance.Client.TurnStart(ctx, codexrpc.TurnStartParams{
@@ -136,7 +141,9 @@ func (m *Manager) SendTask(ctx context.Context, agentID string, message string) 
 		},
 	})
 	if err != nil {
+		instance.mu.Lock()
 		instance.State = StateFailed
+		instance.mu.Unlock()
 		return fmt.Errorf("turn start: %w", err)
 	}
 
@@ -207,15 +214,30 @@ func (m *Manager) createNotificationHandler(agentID string) codexrpc.Notificatio
 
 		switch method {
 		case "turn/started":
+			instance.mu.Lock()
 			instance.State = StateRunning
+			instance.mu.Unlock()
 		case "turn/completed":
 			// Parse the notification to check if it failed
 			var notif codexrpc.TurnCompletedNotification
 			if err := json.Unmarshal(params, &notif); err == nil {
+				instance.mu.Lock()
 				if notif.Turn.Status == "failed" {
 					instance.State = StateFailed
+					instance.mu.Unlock()
+					select {
+					case instance.doneCh <- fmt.Errorf("agent task failed"):
+					default:
+					}
 				} else if notif.Turn.Status == "completed" {
 					instance.State = StateCompleted
+					instance.mu.Unlock()
+					select {
+					case instance.doneCh <- nil:
+					default:
+					}
+				} else {
+					instance.mu.Unlock()
 				}
 			}
 		}
@@ -226,5 +248,23 @@ func (m *Manager) createNotificationHandler(agentID string) codexrpc.Notificatio
 			EventType: method,
 			Data:      params,
 		}
+	}
+}
+
+// WaitForCompletion blocks until the agent's current task completes or the context is cancelled.
+func (m *Manager) WaitForCompletion(ctx context.Context, agentID string) error {
+	m.mu.RLock()
+	instance, exists := m.agents[agentID]
+	m.mu.RUnlock()
+
+	if !exists {
+		return fmt.Errorf("agent %s not found", agentID)
+	}
+
+	select {
+	case err := <-instance.doneCh:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }

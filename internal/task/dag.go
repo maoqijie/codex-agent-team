@@ -3,6 +3,7 @@ package task
 import (
 	"errors"
 	"sync"
+	"time"
 )
 
 // DAG represents a directed acyclic graph of tasks.
@@ -87,7 +88,11 @@ func (d *DAG) UpdateStatus(id string, status TaskStatus) {
 func (d *DAG) HasCycle() bool {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
+	return d.hasCycleLocked()
+}
 
+// hasCycleLocked 是 HasCycle 的内部实现，调用方必须已持有锁。
+func (d *DAG) hasCycleLocked() bool {
 	const (
 		colorWhite = iota // Unvisited
 		colorGray         // Visiting (in current path)
@@ -169,7 +174,7 @@ func (d *DAG) TopologicalOrder() ([]*Task, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
-	if d.HasCycle() {
+	if d.hasCycleLocked() {
 		return nil, errors.New("cycle detected in DAG")
 	}
 
@@ -218,4 +223,57 @@ func (d *DAG) TopologicalOrder() ([]*Task, error) {
 	}
 
 	return result, nil
+}
+
+// SetTaskCompleted atomically marks a task as completed with timestamp.
+func (d *DAG) SetTaskCompleted(taskID string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if t, ok := d.tasks[taskID]; ok {
+		t.Status = StatusCompleted
+		now := time.Now()
+		t.CompletedAt = &now
+	}
+}
+
+// SetTaskFailed atomically marks a task as failed with error message.
+func (d *DAG) SetTaskFailed(taskID string, errMsg string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if t, ok := d.tasks[taskID]; ok {
+		t.Status = StatusFailed
+		t.Error = errMsg
+	}
+}
+
+// UpdateTaskResult 更新任务的执行结果 commit
+func (d *DAG) UpdateTaskResult(taskID string, commitSHA string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if t, ok := d.tasks[taskID]; ok {
+		t.ResultCommit = commitSHA
+	}
+}
+
+// GetDependencyBranches 获取任务所有依赖任务的分支名
+func (d *DAG) GetDependencyBranches(taskID string) []string {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	task, ok := d.tasks[taskID]
+	if !ok {
+		return nil
+	}
+
+	var branches []string
+	for _, depID := range task.DependsOn {
+		if depTask, exists := d.tasks[depID]; exists && depTask.BranchName != "" {
+			branches = append(branches, depTask.BranchName)
+		}
+	}
+
+	return branches
 }

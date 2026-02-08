@@ -24,6 +24,12 @@ type Task struct {
 	AgentID      string     `json:"agentId"`      // 分配的代理 ID
 	WorktreePath string     `json:"worktreePath"` // Git worktree 路径
 	BranchName   string     `json:"branchName"`   // Git 分支名
+
+	// Commit chaining 相关字段
+	BaseCommit    string   `json:"baseCommit"`    // 创建 worktree 的基准 commit
+	ResultCommit  string   `json:"resultCommit"`  // 任务完成后的 commit SHA
+	MergedCommits []string `json:"mergedCommits"` // 合并的上游任务 commits
+
 	CreatedAt    time.Time  `json:"createdAt"`
 	StartedAt    *time.Time `json:"startedAt,omitempty"`
 	CompletedAt  *time.Time `json:"completedAt,omitempty"`
