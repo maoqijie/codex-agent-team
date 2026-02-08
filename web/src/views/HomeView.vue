@@ -52,11 +52,11 @@
           class="session-item running"
         >
           <div class="session-header">
-            <span class="session-id">{{ s.ID?.slice(-8) || s.id?.slice(-8) }}</span>
+            <span class="session-id">{{ String(s.ID).slice(-8) }}</span>
             <span class="status" :class="`status-${s.Status}`">{{ s.Status }}</span>
           </div>
-          <p class="session-task">{{ s.UserTask?.slice(0, 60) || s.userTask?.slice(0, 60) }}{{ (s.UserTask?.length > 60 || s.userTask?.length > 60) ? '...' : '' }}</p>
-          <small class="session-repo">{{ s.RepoPath || s.repoPath }}</small>
+          <p class="session-task">{{ String(s.UserTask || '').slice(0, 60) }}{{ String(s.UserTask || '').length > 60 ? '...' : '' }}</p>
+          <small class="session-repo">{{ s.RepoPath }}</small>
         </div>
       </div>
     </div>
@@ -72,12 +72,12 @@
           class="session-item"
         >
           <div class="session-header">
-            <span class="session-id">{{ s.ID?.slice(-8) || s.id?.slice(-8) }}</span>
+            <span class="session-id">{{ String(s.ID).slice(-8) }}</span>
             <span class="status" :class="`status-${s.Status}`">{{ s.Status }}</span>
           </div>
-          <p class="session-task">{{ s.UserTask?.slice(0, 60) || s.userTask?.slice(0, 60) }}{{ (s.UserTask?.length > 60 || s.userTask?.length > 60) ? '...' : '' }}</p>
-          <small class="session-repo">{{ s.RepoPath || s.repoPath }}</small>
-          <small class="session-time">{{ formatTime(s.CreatedAt || s.createdAt) }}</small>
+          <p class="session-task">{{ String(s.UserTask || '').slice(0, 60) }}{{ String(s.UserTask || '').length > 60 ? '...' : '' }}</p>
+          <small class="session-repo">{{ s.RepoPath }}</small>
+          <small class="session-time">{{ formatTime(s.CreatedAt) }}</small>
         </div>
       </div>
     </div>
