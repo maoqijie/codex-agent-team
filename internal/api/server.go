@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"codex-agent-team/internal/session"
+	web "codex-agent-team/web"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/cors"
@@ -48,19 +49,17 @@ func NewServer(codexBin, repoPath string) *Server {
 // setupMiddleware configures server middleware.
 func (s *Server) setupMiddleware() {
 	s.router.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   []string{"http://localhost:5173", "http://localhost:3000"},
+		AllowedOrigins:   []string{"*"},
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
 		ExposedHeaders:   []string{"Link"},
-		AllowCredentials: true,
+		AllowCredentials: false,
 		MaxAge:           300,
 	}))
 }
 
 // setupRoutes configures all HTTP routes.
 func (s *Server) setupRoutes() {
-	s.router.Get("/", s.handleIndex)
-
 	// Session API
 	s.router.Post("/api/sessions", s.handleCreateSession)
 	s.router.Get("/api/sessions/{id}", s.handleGetSession)
@@ -71,14 +70,16 @@ func (s *Server) setupRoutes() {
 
 	// WebSocket endpoint
 	s.router.Get("/ws/sessions/{id}", s.handleWebSocket)
-}
 
-// handleIndex serves the API index.
-func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{
-		"version": "1.0.0",
-		"name":    "Codex Agent Team API",
+	// Serve embedded frontend (catch-all route)
+	frontendFS := http.FS(web.FS())
+	s.router.Get("/*", func(w http.ResponseWriter, r *http.Request) {
+		// Skip API and WS routes
+		if len(r.URL.Path) >= 4 && (r.URL.Path[:4] == "/api" || r.URL.Path[:3] == "/ws") {
+			http.NotFound(w, r)
+			return
+		}
+		http.FileServer(frontendFS).ServeHTTP(w, r)
 	})
 }
 
@@ -232,7 +233,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	opts := &websocket.AcceptOptions{
-		OriginPatterns: []string{"localhost:5173", "localhost:3000"},
+		OriginPatterns: []string{"*"},
 	}
 
 	conn, err := websocket.Accept(w, r, opts)
